@@ -11,9 +11,10 @@ def run_expected_sarsa(env, episodes, lr=0.1, gamma=0.95, epsilon=0.1, verbose=T
 
     # para cada episódio, guarda sua soma de recompensas (retorno não-descontado)
     sum_rewards_per_ep = []
-
+    episodes = []
     # loop principal
     for i in range(episodes):
+        transitions = []
         done = False
         sum_rewards, reward = 0, 0
 
@@ -41,15 +42,15 @@ def run_expected_sarsa(env, episodes, lr=0.1, gamma=0.95, epsilon=0.1, verbose=T
             delta = (reward + gamma * V_next_state) - Q[state,action]
             Q[state,action] = Q[state,action] + lr * delta
 
+            transitions.append((state, action, reward, next_state, done))
             sum_rewards += reward
             state = next_state
 
         # salva o retorno do episódio que encerrou
         sum_rewards_per_ep.append(sum_rewards)
-
+        episodes.append(transitions)
         # a cada 100 episódios, imprime informação sobre o progresso
         if verbose and ((i+1) % 100 == 0):
             avg_reward = np.mean(sum_rewards_per_ep[-100:])
             print(f"Episode {i+1} Average Reward (last 100): {avg_reward:.3f}")
-
-    return sum_rewards_per_ep, Q
+    return sum_rewards_per_ep, Q, episodes
