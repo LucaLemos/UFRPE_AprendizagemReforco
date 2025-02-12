@@ -1,4 +1,3 @@
-
 import gymnasium as gym
 import numpy as np
 
@@ -26,6 +25,17 @@ def epsilon_greedy_random_tiebreak(qtable, state, epsilon):
         # retorna uma ação de valor máximo -- aleatoriza em caso de empates
         return np.random.choice(np.where(q_state == q_state.max())[0])
 
+def epsilon_greedy_probs(Q, state, num_actions, epsilon):
+    # lista com a probabilidade que todas as ações têm de ser escolhidas nas decisões exploratórias (não-gulosas)
+    probs = [ (epsilon / num_actions) ] * num_actions
+
+    # adiciona a probabilidade para a ação 'greedy'
+    # em caso de empate, só o menor índice é considerado
+    # (isso é coerente com a implementação da função epsilon_greedy())
+    greedy_action = np.argmax(Q[state])
+    probs[greedy_action] += (1.0 - epsilon)
+
+    return probs
 
 def _delete_files(folder, prefix, suffix):
     import os
