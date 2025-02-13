@@ -46,9 +46,10 @@ def run_expected_sarsa(env, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True
             sum_rewards, reward = 0, 0
             state, _ = env.reset()
             done = False
+            if verbose and len(episodes) % 100 == 0:
+                print(f"Episódio {i+1} terminou com recompensa {sum_rewards}")
     # Se o episódio foi interrompido antes de ser salvo, adicionamos os dados pendentes
     if transitions:
         sum_rewards_per_ep.append(sum_rewards)
         episodes.append(transitions)
-    
     return sum_rewards_per_ep, Q, episodes
