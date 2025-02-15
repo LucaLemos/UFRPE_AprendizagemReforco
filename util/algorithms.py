@@ -1,6 +1,6 @@
 from .qtable_helper import epsilon_greedy, epsilon_greedy_probs
 import numpy as np
-from tianshou.data import ReplayBuffer, Batch
+from collections import deque
 
 # Algoritmo Expected-SARSA
 def run_expected_sarsa(env, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True):
@@ -18,10 +18,8 @@ def run_expected_sarsa(env, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True
     state, _ = env.reset()
     done = False
     count_ep = 0
-    
-    # ReplayBuffer para armazenar as transições
-    replay_buffer = ReplayBuffer(size=steps)
 
+    replay_buffer = deque(maxlen=steps)
     # loop principal
     for i in range(steps):
         # escolhe a próxima ação -- usa epsilon-greedy
@@ -40,27 +38,16 @@ def run_expected_sarsa(env, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True
         # delta = (estimativa usando a nova recompensa) - estimativa antiga
         delta = (reward + gamma * V_next_state) - Q[state,action]
         Q[state,action] = Q[state,action] + lr * delta
+        replay_buffer.append((state, action, reward, next_state, terminated, trunc, done, info))
 
-        replay_buffer.add(
-            Batch(
-                obs=state,
-                act=action,
-                rew=reward,
-                obs_next=next_state,
-                terminated=terminated,
-                truncated=trunc,
-                done=done,
-                info=info
-            )
-        )
-        
+        # atualiza o estado
         sum_rewards += reward
         state = next_state
         if done or i == steps - 1:
             # salva o retorno do episódio que encerrou
             sum_rewards_per_ep.append(sum_rewards)
             if verbose and count_ep % 100 == 0:
-                print(f"Episódio {count_ep} {"NÃO terminou e teve" if i == steps - 1 else "terminou com"} recompensa {sum_rewards} na transição {i}")
+                print(f"Episódio {count_ep} terminou com recompensa {sum_rewards} na transição {i}")
             # reseta o ambiente para o novo episódio
             sum_rewards, reward = 0, 0
             state, _ = env.reset()
