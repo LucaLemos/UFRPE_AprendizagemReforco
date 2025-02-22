@@ -57,13 +57,12 @@ def run_expected_sarsa(env, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True
 
 # Algoritmo SARSA
 # Atenção: os espaços de estados e de ações precisam ser discretos, dados por valores inteiros
-def run_sarsa(env, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True):
+def run_sarsa(env, replay_buffer, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True):
     print(f"Run sarsa in {env}")
-    num_actions = env.action_space.n
 
     # inicializa a tabela Q com valores aleatórios de -1.0 a 0.0
     # usar o estado como índice das linhas e a ação como índice das colunas
-    Q = np.zeros(shape = (env.observation_space.n, num_actions))
+    Q = np.zeros(shape = (env.observation_space.n, env.action_space.n))
 
     # para cada episódio, guarda sua soma de recompensas (retorno não-descontado)
     sum_rewards_per_ep = []
@@ -71,12 +70,13 @@ def run_sarsa(env, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True):
     state, _ = env.reset()
     done = False
     count_ep = 0
-    replay_buffer = deque(maxlen=steps)
+
+    print("OI")
     # loop principal
     action = epsilon_greedy(Q, state, epsilon)
     for i in range(steps):
         # realiza a ação, ou seja, dá um passo no ambiente
-        next_state, reward, terminated, trunc, info = env.step(action)
+        next_state, reward, terminated, trunc, _ = env.step(action)
         done = terminated or trunc
         next_action = epsilon_greedy(Q, next_state, epsilon)
         
@@ -90,7 +90,7 @@ def run_sarsa(env, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True):
         # delta = (estimativa usando a nova recompensa) - estimativa antiga
         delta = (reward + gamma * V_next_state) - Q[state,action]
         Q[state,action] = Q[state,action] + lr * delta
-        replay_buffer.append((state, action, reward, next_state, terminated, trunc, done, info))
+        replay_buffer.add(state, action, reward, next_state, done)
         
         # atualiza o estado
         sum_rewards += reward
@@ -109,4 +109,4 @@ def run_sarsa(env, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbose=True):
             done = False
             count_ep += 1
 
-    return sum_rewards_per_ep, Q, replay_buffer
+    return sum_rewards_per_ep, Q
