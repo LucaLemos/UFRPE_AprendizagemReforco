@@ -1,7 +1,6 @@
 import json
 import random
 import torch
-import wandb
 import numpy as np
 from collections import deque, namedtuple
 from torch import optim, nn
@@ -100,33 +99,84 @@ class DDQN(nn.Module):
 
         return out
 
+class FrozenLakeNet(nn.Module):
+    def __init__(self, state_size, action_size, layer_size):
+        super(FrozenLakeNet, self).__init__()
+        self.input_size = state_size
+        self.action_size = action_size
+        self.fc1 = nn.Linear(state_size, layer_size)
+        self.fc2 = nn.Linear(layer_size, layer_size)
+        self.fc3 = nn.Linear(layer_size, action_size)
+        
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)  # Sem ativação na saída (para Q-values)
+        return x
+
+class CliffWalkingNet(nn.Module):
+    def __init__(self, state_size, action_size, layer_size):
+        super(CliffWalkingNet, self).__init__()
+        self.input_size = state_size
+        self.action_size = action_size
+        self.fc1 = nn.Linear(state_size, layer_size)
+        self.fc2 = nn.Linear(layer_size, layer_size // 2)
+        self.fc3 = nn.Linear(layer_size // 2, layer_size // 4)
+        self.fc4 = nn.Linear(layer_size // 4, action_size)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = torch.relu(self.fc3(x))
+        x = self.fc4(x)
+        return x
+
+
+class TaxiNet(nn.Module):
+    def __init__(self, state_size, action_size, layer_size):
+        super(TaxiNet, self).__init__()
+        self.input_size = state_size
+        self.action_size = action_size
+        self.fc1 = nn.Linear(state_size, layer_size)
+        self.fc2 = nn.Linear(layer_size, layer_size)
+        self.fc3 = nn.Linear(layer_size, layer_size // 2)
+        self.fc4 = nn.Linear(layer_size // 2, layer_size // 4)
+        self.fc5 = nn.Linear(layer_size // 4, action_size)
+        self.dropout = nn.Dropout(0.1)  # Evitar overfitting
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.dropout(torch.relu(self.fc3(x)))
+        x = torch.relu(self.fc4(x))
+        x = self.fc5(x)
+        return x
+
+
 class CQLAgent():
-    def __init__(self, state_size, action_size, tau, gamma, lr, hidden_size=256, device="cpu"):
+    def __init__(self, state_size, action_size, tau, gamma, lr, alpha, model, hidden_size=256, device="cpu"):
         self.state_size = state_size
         self.action_size = action_size
         self.device = device
         self.tau = tau
         self.gamma = gamma
+        self.lr = lr
+        self.alpha = alpha
 
-        self.network = DDQN(self.state_size, self.action_size, hidden_size).to(self.device)
+        self.network = model(self.state_size, self.action_size, hidden_size).to(self.device)
 
-        self.target_net = DDQN(self.state_size, self.action_size, hidden_size).to(self.device)
+        self.target_net = model(self.state_size, self.action_size, hidden_size).to(self.device)
 
         self.optimizer = optim.Adam(self.network.parameters(), lr)
 
 
-    def get_action(self, state, epsilon):
-        if random.random() > epsilon:
-            state_tensor = torch.tensor([state], dtype=torch.long)  # Criar um tensor de batch_size=1
-            state = to_one_hot(state_tensor, self.state_size)[0].float().unsqueeze(0).to(self.device)
-            self.network.eval()
-            with torch.no_grad():
-                action_values = self.network(state)
-            self.network.train()
-            action = np.argmax(action_values.cpu().data.numpy(), axis=1)
-        else:
-            action = random.choices(np.arange(self.action_size), k=1)
-            #action = np.array([random.randint(0, self.action_size - 1)])
+    def get_action(self, state):
+        state_tensor = torch.tensor([state], dtype=torch.float)  # Criar um tensor de batch_size=1
+        state = to_one_hot(state_tensor, self.state_size)[0].float().unsqueeze(0).to(self.device)
+        self.network.eval()
+        with torch.no_grad():
+            action_values = self.network(state)
+        action = np.argmax(action_values.cpu().data.numpy(), axis=1)
         return action
 
     def cql_loss(self, q_values, current_action):
@@ -137,12 +187,13 @@ class CQLAgent():
         return (logsumexp - q_a).mean()
 
     def learn(self, experiences):
-
+        self.network.train()
+        
         states, actions, rewards, next_states, dones = experiences
         states = to_one_hot(states, self.state_size)
         next_states = to_one_hot(next_states, self.state_size)
-        #print(next_states)
         with torch.no_grad():
+            #Q_targets_next = self.target_net(next_states).max(dim=1, keepdim=True)[0]  # Max Q-value
             Q_targets_next = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
             Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
 
@@ -151,10 +202,10 @@ class CQLAgent():
 
         cql1_loss = self.cql_loss(Q_a_s, actions)
 
-        loss_fn = nn.MSELoss()  # Criando a função de perda
+        loss_fn = nn.SmoothL1Loss()  # Mais robusta que MSELoss
         bellman_error = loss_fn(Q_expected, Q_targets)
 
-        q1_loss = cql1_loss + 0.5 * bellman_error
+        q1_loss = cql1_loss + self.alpha * bellman_error
 
         self.optimizer.zero_grad()
         q1_loss.backward()
@@ -165,6 +216,34 @@ class CQLAgent():
         self.soft_update(self.network, self.target_net)
         return q1_loss.detach().item(), cql1_loss.detach().item(), bellman_error.detach().item()
 
+    def FQIlearn(self, experiences):
+        self.network.train()
+        
+        states, actions, rewards, next_states, dones = experiences
+        states = to_one_hot(states, self.state_size)
+        next_states = to_one_hot(next_states, self.state_size)
+
+        with torch.no_grad():
+            # Calcula Q_targets apenas com a equação de Bellman
+            Q_targets_next = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
+            Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
+
+        Q_a_s = self.network(states)
+        Q_expected = Q_a_s.gather(1, actions)
+
+        # Remove o termo CQL, deixando apenas a loss de Bellman
+        loss_fn = nn.SmoothL1Loss()  # Huber Loss (melhor que MSE para estabilidade)
+        bellman_error = loss_fn(Q_expected, Q_targets)
+
+        self.optimizer.zero_grad()
+        bellman_error.backward()
+        nn.utils.clip_grad_norm_(self.network.parameters(), 1.0)
+        self.optimizer.step()
+
+        # Atualiza a rede-alvo de forma suave
+        self.soft_update(self.network, self.target_net)
+
+        return bellman_error.detach().item()
 
     def soft_update(self, local_model, target_model):
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
@@ -175,12 +254,8 @@ def save(args, save_name, model, wandb, ep=None):
     save_dir = './trained_models/'
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    if not ep == None:
-        torch.save(model.state_dict(), save_dir + args.run_name + save_name + str(ep) + ".pth")
-        #wandb.save(save_dir + args.run_name + save_name + str(ep) + ".pth")
-    else:
-        torch.save(model.state_dict(), save_dir + args.run_name + save_name + ".pth")
-        #wandb.save(save_dir + args.run_name + save_name + ".pth")
+    torch.save(model.state_dict(), save_dir + args.env + save_name + ".pth")
+
 
 def collect_random(env, dataset, num_samples=200):
     state = env.reset()
