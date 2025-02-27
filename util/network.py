@@ -5,6 +5,21 @@ import numpy as np
 from collections import deque, namedtuple
 from torch import optim, nn
 
+def to_one_hot(size, states): 
+        one_hot_states = torch.zeros((states.shape[0], size), device=states.device)
+        one_hot_states.scatter_(1, states.long().unsqueeze(1), 1)  
+        return one_hot_states
+
+def collect_random(env, dataset, num_samples=200):
+    state = env.reset()
+    for _ in range(num_samples):
+        action = env.action_space.sample()
+        next_state, reward, done, _ = env.step(action)
+        dataset.add(state, action, reward, next_state, done)
+        state = next_state
+        if done:
+            state = env.reset()
+
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
 
@@ -77,32 +92,10 @@ class ReplayBuffer:
         """Return the current size of internal memory."""
         return len(self.memory)
 
-class DDQN(nn.Module):
-    def __init__(self, state_size, action_size, layer_size):
-        super(DDQN, self).__init__()
-        self.input_size = state_size
-        self.action_size = action_size
-        print(f"Input Size: {self.input_size} (type: {type(self.input_size)})")
-        print(f"Layer Size: {layer_size} (type: {type(layer_size)})")
-
-        self.head_1 = nn.Linear(self.input_size, layer_size)
-        self.ff_1 = nn.Linear(layer_size, layer_size)
-        self.ff_2 = nn.Linear(layer_size, action_size)
-
-    def forward(self, input):
-        """
-
-        """
-        x = torch.relu(self.head_1(input))
-        x = torch.relu(self.ff_1(x))
-        out = self.ff_2(x)
-
-        return out
-
 class FrozenLakeNet(nn.Module):
     def __init__(self, state_size, action_size, layer_size):
         super(FrozenLakeNet, self).__init__()
-        self.input_size = state_size
+        self.state_size = state_size
         self.action_size = action_size
         self.fc1 = nn.Linear(state_size, layer_size)
         self.fc2 = nn.Linear(layer_size, layer_size)
@@ -111,13 +104,13 @@ class FrozenLakeNet(nn.Module):
     def forward(self, x):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
-        x = self.fc3(x)  # Sem ativação na saída (para Q-values)
+        x = self.fc3(x)
         return x
 
 class CliffWalkingNet(nn.Module):
     def __init__(self, state_size, action_size, layer_size):
         super(CliffWalkingNet, self).__init__()
-        self.input_size = state_size
+        self.state_size = state_size
         self.action_size = action_size
         self.fc1 = nn.Linear(state_size, layer_size)
         self.fc2 = nn.Linear(layer_size, layer_size // 2)
@@ -135,7 +128,7 @@ class CliffWalkingNet(nn.Module):
 class TaxiNet(nn.Module):
     def __init__(self, state_size, action_size, layer_size):
         super(TaxiNet, self).__init__()
-        self.input_size = state_size
+        self.state_size = state_size
         self.action_size = action_size
         self.fc1 = nn.Linear(state_size, layer_size)
         self.fc2 = nn.Linear(layer_size, layer_size)
@@ -153,75 +146,45 @@ class TaxiNet(nn.Module):
         return x
 
 
-class CQLAgent():
-    def __init__(self, state_size, action_size, tau, gamma, lr, alpha, model, hidden_size=256, device="cpu"):
+class Agent():
+    def __init__(self, state_size, action_size, tau, gamma, lr, model, hidden_size=256, device="cpu"):
         self.state_size = state_size
         self.action_size = action_size
         self.device = device
         self.tau = tau
         self.gamma = gamma
         self.lr = lr
-        self.alpha = alpha
-
         self.network = model(self.state_size, self.action_size, hidden_size).to(self.device)
-
         self.target_net = model(self.state_size, self.action_size, hidden_size).to(self.device)
-
         self.optimizer = optim.Adam(self.network.parameters(), lr)
 
 
     def get_action(self, state):
         state_tensor = torch.tensor([state], dtype=torch.float)  # Criar um tensor de batch_size=1
-        state = to_one_hot(state_tensor, self.state_size)[0].float().unsqueeze(0).to(self.device)
+        state = to_one_hot(self.state_size, state_tensor)[0].float().unsqueeze(0).to(self.device)
         self.network.eval()
         with torch.no_grad():
             action_values = self.network(state)
         action = np.argmax(action_values.cpu().data.numpy(), axis=1)
         return action
 
-    def cql_loss(self, q_values, current_action):
-        """Computes the CQL loss for a batch of Q-values and actions."""
-        logsumexp = torch.logsumexp(q_values, dim=1, keepdim=True)
-        q_a = q_values.gather(1, current_action)
+    def save(self, args, save_name):
+        import os
+        save_dir = './trained_models/'
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        torch.save(self.network.state_dict(), save_dir + args.env + save_name + ".pth")
 
-        return (logsumexp - q_a).mean()
+    def soft_update(self):
+        for target_param, local_param in zip(self.target_net.parameters(), self.network.parameters()):
+            target_param.data.copy_(self.tau*local_param.data + (1.0-self.tau)*target_param.data)
 
-    def learn(self, experiences):
+    def bellman_error(self, experiences):
         self.network.train()
         
         states, actions, rewards, next_states, dones = experiences
-        states = to_one_hot(states, self.state_size)
-        next_states = to_one_hot(next_states, self.state_size)
-        with torch.no_grad():
-            #Q_targets_next = self.target_net(next_states).max(dim=1, keepdim=True)[0]  # Max Q-value
-            Q_targets_next = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
-            Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
-
-        Q_a_s = self.network(states)
-        Q_expected = Q_a_s.gather(1, actions)
-
-        cql1_loss = self.cql_loss(Q_a_s, actions)
-
-        loss_fn = nn.SmoothL1Loss()  # Mais robusta que MSELoss
-        bellman_error = loss_fn(Q_expected, Q_targets)
-
-        q1_loss = cql1_loss + self.alpha * bellman_error
-
-        self.optimizer.zero_grad()
-        q1_loss.backward()
-        nn.utils.clip_grad_norm_(self.network.parameters(), 1.)
-        self.optimizer.step()
-
-        # ------------------- update target network ------------------- #
-        self.soft_update(self.network, self.target_net)
-        return q1_loss.detach().item(), cql1_loss.detach().item(), bellman_error.detach().item()
-
-    def FQIlearn(self, experiences):
-        self.network.train()
-        
-        states, actions, rewards, next_states, dones = experiences
-        states = to_one_hot(states, self.state_size)
-        next_states = to_one_hot(next_states, self.state_size)
+        states = to_one_hot(self.state_size, states)
+        next_states = to_one_hot(self.state_size, next_states)
 
         with torch.no_grad():
             # Calcula Q_targets apenas com a equação de Bellman
@@ -234,40 +197,47 @@ class CQLAgent():
         # Remove o termo CQL, deixando apenas a loss de Bellman
         loss_fn = nn.SmoothL1Loss()  # Huber Loss (melhor que MSE para estabilidade)
         bellman_error = loss_fn(Q_expected, Q_targets)
+        return bellman_error, Q_a_s, actions
 
+class CQLAgent(Agent):
+    def __init__(self, state_size, action_size, tau, gamma, lr, alpha, model, hidden_size=256, device="cpu"):
+        super().__init__(state_size, action_size, tau, gamma, lr, model, hidden_size, device)
+        self.alpha = alpha
+        
+    def cql_loss(self, q_values, current_action):
+        """Computes the CQL loss for a batch of Q-values and actions."""
+        logsumexp = torch.logsumexp(q_values, dim=1, keepdim=True)
+        q_a = q_values.gather(1, current_action)
+        return (logsumexp - q_a).mean()
+    
+    def learn(self, experiences):
+        bellman_error, Q_a_s, actions = self.bellman_error(experiences)
+        
+        cql1_loss = self.cql_loss(Q_a_s, actions)
+        q1_loss = cql1_loss + self.alpha * bellman_error
+
+        self.optimizer.zero_grad()
+        q1_loss.backward()
+        nn.utils.clip_grad_norm_(self.network.parameters(), 1.)
+        self.optimizer.step()
+
+        # ------------------- update target network ------------------- #
+        self.soft_update()
+        return q1_loss.detach().item(), cql1_loss.detach().item(), bellman_error.detach().item()
+
+class FQIAgent(Agent):
+    def __init__(self, state_size, action_size, tau, gamma, lr, model, hidden_size=256, device="cpu"):
+        super().__init__(state_size, action_size, tau, gamma, lr, model, hidden_size, device)
+    
+    def learn(self, experiences):
+        bellman_error, _, _ = self.bellman_error(experiences)
+        
         self.optimizer.zero_grad()
         bellman_error.backward()
         nn.utils.clip_grad_norm_(self.network.parameters(), 1.0)
         self.optimizer.step()
 
         # Atualiza a rede-alvo de forma suave
-        self.soft_update(self.network, self.target_net)
+        self.soft_update()
 
         return bellman_error.detach().item()
-
-    def soft_update(self, local_model, target_model):
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(self.tau*local_param.data + (1.0-self.tau)*target_param.data)
-            
-def save(args, save_name, model, wandb, ep=None):
-    import os
-    save_dir = './trained_models/'
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-    torch.save(model.state_dict(), save_dir + args.env + save_name + ".pth")
-
-
-def collect_random(env, dataset, num_samples=200):
-    state = env.reset()
-    for _ in range(num_samples):
-        action = env.action_space.sample()
-        next_state, reward, done, _ = env.step(action)
-        dataset.add(state, action, reward, next_state, done)
-        state = next_state
-        if done:
-            state = env.reset()
-
-def to_one_hot(states, state_size): 
-    one_hot_states = torch.zeros((states.shape[0], state_size), device=states.device)
-    one_hot_states.scatter_(1, states.long().unsqueeze(1), 1)  
-    return one_hot_states
