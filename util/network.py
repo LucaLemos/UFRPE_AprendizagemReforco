@@ -181,8 +181,6 @@ class Agent():
             #print(f"Q_targets_Next: {Q_targets_next}")
             Q_targets_next[dones] = 0.0
             Q_targets_next = Q_targets_next.detach()
-            if self.isDiscrete:
-                Q_targets_next = Q_targets_next.unsqueeze(1)
             Q_targets = rewards + (self.gamma * Q_targets_next)
             
         Q_a_s = self.network(states)
