@@ -89,7 +89,7 @@ def run_sarsa(env, replay_buffer, steps, lr=0.1, gamma=0.95, epsilon=0.1, verbos
         # delta = (estimativa usando a nova recompensa) - estimativa antiga
         delta = (reward + gamma * V_next_state) - Q[state,action]
         Q[state,action] = Q[state,action] + lr * delta
-        replay_buffer.add(state, action, reward, done, next_state)
+        replay_buffer.add(state, action, reward, terminated, next_state)
         
         # atualiza o estado
         sum_rewards += reward
