@@ -6,9 +6,10 @@ from collections import deque, namedtuple
 from torch import optim, nn
 
 def to_one_hot(size, states): 
-        one_hot_states = torch.zeros((states.shape[0], size), device=states.device)
-        one_hot_states.scatter_(1, states.long().unsqueeze(1), 1)  
-        return one_hot_states
+    states = torch.tensor(states, dtype=torch.long)  # Garante que é tensor de inteiros
+    one_hot = torch.zeros(len(states), size)  # Cria matriz de zeros
+    one_hot[torch.arange(len(states)), states] = 1  # Marca os índices com 1
+    return one_hot
 
 def collect_random(env, dataset, num_samples=200):
     state = env.reset()
@@ -30,7 +31,7 @@ class ReplayBuffer:
         self.buffer_size = buffer_size
 
         # Definição da experiência
-        self.experience = namedtuple("Experience", field_names=experience_fields or ["state", "action", "reward", "next_state", "done"])
+        self.experience = namedtuple("Experience", field_names=experience_fields or ["state", "action", "reward", "done", "next_state"])
 
         # Inicializa a memória (carregar caso já tenha sido salvo antes)
         self.memory = deque(
@@ -50,21 +51,27 @@ class ReplayBuffer:
         e = self.experience(state, action, reward, next_state, done)
         self.memory.append(e)
 
-    def sample(self):
-        """Randomly sample a batch of experiences from memory."""
-        experiences = random.sample(self.memory, k=self.batch_size)
-
-        states = torch.from_numpy(np.stack([e.state for e in experiences if e is not None])).float().to(self.device)
-        actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).long().to(self.device)
-        rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(self.device)
-        next_states = torch.from_numpy(np.stack([e.next_state for e in experiences if e is not None])).float().to(self.device)
-        dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(self.device)
-
-        return (states, actions, rewards, next_states, dones)
+    def sample_continuous(self):
+        indices = np.random.choice(len(self.memory), self.batch_size, replace=False)
+        states, actions, rewards, dones, next_states = zip(*[self.memory[idx] for idx in indices])
+        return np.array(states), np.array(actions), np.array(rewards, dtype=np.float32), \
+               np.array(dones, dtype=np.uint8), np.array(next_states)
 
     def save_config(self, filename):
         """Salva a configuração da ReplayBuffer em um arquivo JSON."""
-        data = [{k: int(v) if isinstance(v, np.integer) else float(v) if isinstance(v, np.floating) else v for k, v in exp._asdict().items()} for exp in self.memory]
+        print()
+        #data = [{k: int(v) if isinstance(v, np.integer) else float(v) if isinstance(v, np.floating) else v for k, v in exp._asdict().items()} for exp in self.memory]
+        data = [
+            {
+                k: int(v) if isinstance(v, np.integer) else 
+                float(v) if isinstance(v, np.floating) else 
+                v.tolist() if isinstance(v, np.ndarray) else 
+                v
+                for k, v in exp._asdict().items()
+            } 
+            for exp in self.memory
+        ]
+        
         config = {
             "buffer_size": self.buffer_size,
             "batch_size": self.batch_size,
@@ -92,70 +99,39 @@ class ReplayBuffer:
         """Return the current size of internal memory."""
         return len(self.memory)
 
-class FrozenLakeNet(nn.Module):
-    def __init__(self, state_size, action_size, layer_size):
-        super(FrozenLakeNet, self).__init__()
-        self.state_size = state_size
-        self.action_size = action_size
-        self.fc1 = nn.Linear(state_size, layer_size)
-        self.fc2 = nn.Linear(layer_size, layer_size)
-        self.fc3 = nn.Linear(layer_size, action_size)
-        
-    def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
-class CliffWalkingNet(nn.Module):
-    def __init__(self, state_size, action_size, layer_size):
-        super(CliffWalkingNet, self).__init__()
-        self.state_size = state_size
-        self.action_size = action_size
-        self.fc1 = nn.Linear(state_size, layer_size)
-        self.fc2 = nn.Linear(layer_size, layer_size // 2)
-        self.fc3 = nn.Linear(layer_size // 2, layer_size // 4)
-        self.fc4 = nn.Linear(layer_size // 4, action_size)
+class MLP(nn.Module):
+    def __init__(self, input_dim, output_dim, list_hidden_dims, final_activ_fn=None):
+        super().__init__()
+        self.state_size = input_dim
+        self.action_size = output_dim
+        layers = []
+        last_dim = input_dim
+        for dim in list_hidden_dims:
+            layers.append(nn.Linear(last_dim, dim, bias=True))
+            layers.append(nn.ReLU())
+            last_dim = dim
+        layers.append(nn.Linear(last_dim, output_dim, bias=True))
+        if final_activ_fn is not None:
+            layers.append( final_activ_fn )
+        self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = torch.relu(self.fc3(x))
-        x = self.fc4(x)
-        return x
-
-
-class TaxiNet(nn.Module):
-    def __init__(self, state_size, action_size, layer_size):
-        super(TaxiNet, self).__init__()
-        self.state_size = state_size
-        self.action_size = action_size
-        self.fc1 = nn.Linear(state_size, layer_size)
-        self.fc2 = nn.Linear(layer_size, layer_size)
-        self.fc3 = nn.Linear(layer_size, layer_size // 2)
-        self.fc4 = nn.Linear(layer_size // 2, layer_size // 4)
-        self.fc5 = nn.Linear(layer_size // 4, action_size)
-        self.dropout = nn.Dropout(0.1)  # Evitar overfitting
-
-    def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = self.dropout(torch.relu(self.fc3(x)))
-        x = torch.relu(self.fc4(x))
-        x = self.fc5(x)
-        return x
-
+        y = x
+        for layer in self.layers:
+            y = layer(y)
+        return y
 
 class Agent():
-    def __init__(self, state_size, action_size, tau, gamma, lr, model, hidden_size=256, device="cpu"):
+    def __init__(self, state_size, action_size, tau, gamma, lr, hidden_size, device="cpu", isDiscrete=True):
+        self.isDiscrete = isDiscrete
         self.state_size = state_size
         self.action_size = action_size
         self.device = device
         self.tau = tau
         self.gamma = gamma
         self.lr = lr
-        self.network = model(self.state_size, self.action_size, hidden_size).to(self.device)
-        self.target_net = model(self.state_size, self.action_size, hidden_size).to(self.device)
+        self.network = MLP(self.state_size, self.action_size, hidden_size).to(self.device)
+        self.target_net = MLP(self.state_size, self.action_size, hidden_size).to(self.device)
         self.optimizer = optim.Adam(self.network.parameters(), lr)
 
 
@@ -180,37 +156,60 @@ class Agent():
             target_param.data.copy_(self.tau*local_param.data + (1.0-self.tau)*target_param.data)
 
     def bellman_error(self, experiences):
-        self.network.train()
         
-        states, actions, rewards, next_states, dones = experiences
-        states = to_one_hot(self.state_size, states)
-        next_states = to_one_hot(self.state_size, next_states)
-
+        
+        states, actions, rewards, dones, next_states = experiences
+        #print(f"Actions Antes: {actions}")
+        #print(f"States Antes: {states}")
+        #print(f"Dones Antes: {dones}")
+        #print(f"next_States Antes: {next_states}")
+        actions = torch.tensor(actions, dtype=torch.int64)
+        rewards = torch.tensor(rewards)
+        dones = torch.tensor(dones, dtype=torch.bool)
+        #print(f"Actions Depois: {actions}")
+        #print(f"Dones Depois: {dones}")
+        if self.isDiscrete:
+            states = to_one_hot(self.state_size, states)
+            next_states = to_one_hot(self.state_size, next_states)
+        else:
+            states = torch.tensor(states, dtype=torch.float32)
+            next_states = torch.tensor(next_states, dtype=torch.float32)
+        #print(f"States Depois: {states}")
         with torch.no_grad():
             # Calcula Q_targets apenas com a equação de Bellman
-            Q_targets_next = self.target_net(next_states).detach().max(1)[0].unsqueeze(1)
-            Q_targets = rewards + (self.gamma * Q_targets_next * (1 - dones))
-
+            #print(f"next_states: {next_states}")
+            #print(f"target_net: {self.target_net}")
+            Q_targets_next = self.target_net(next_states).max(dim=1)[0]
+            #print(f"Q_targets_Next: {Q_targets_next}")
+            Q_targets_next[dones] = 0.0
+            Q_targets_next = Q_targets_next.detach()
+            if self.isDiscrete:
+                Q_targets_next = Q_targets_next.unsqueeze(1)
+            Q_targets = rewards + (self.gamma * Q_targets_next)
+            
         Q_a_s = self.network(states)
-        Q_expected = Q_a_s.gather(1, actions)
+        #print(f"Q_a_s: {Q_a_s}")
 
+        Q_expected = Q_a_s.gather(1, actions.unsqueeze(-1)).squeeze(-1)
         # Remove o termo CQL, deixando apenas a loss de Bellman
         loss_fn = nn.SmoothL1Loss()  # Huber Loss (melhor que MSE para estabilidade)
         bellman_error = loss_fn(Q_expected, Q_targets)
         return bellman_error, Q_a_s, actions
 
 class CQLAgent(Agent):
-    def __init__(self, state_size, action_size, tau, gamma, lr, alpha, model, hidden_size=256, device="cpu"):
-        super().__init__(state_size, action_size, tau, gamma, lr, model, hidden_size, device)
+    def __init__(self, state_size, action_size, tau, gamma, lr, alpha, hidden_size=[128, 128], device="cpu", isDiscrete=True):
+        super().__init__(state_size, action_size, tau, gamma, lr, hidden_size, device, isDiscrete)
         self.alpha = alpha
+        self.isDiscrete = isDiscrete
         
     def cql_loss(self, q_values, current_action):
         """Computes the CQL loss for a batch of Q-values and actions."""
         logsumexp = torch.logsumexp(q_values, dim=1, keepdim=True)
-        q_a = q_values.gather(1, current_action)
+        q_a = q_values.gather(1, current_action.unsqueeze(-1)).squeeze(-1)
         return (logsumexp - q_a).mean()
     
     def learn(self, experiences):
+        self.network.train()
         bellman_error, Q_a_s, actions = self.bellman_error(experiences)
         
         cql1_loss = self.cql_loss(Q_a_s, actions)
@@ -230,6 +229,7 @@ class FQIAgent(Agent):
         super().__init__(state_size, action_size, tau, gamma, lr, model, hidden_size, device)
     
     def learn(self, experiences):
+        self.network.train()
         bellman_error, _, _ = self.bellman_error(experiences)
         
         self.optimizer.zero_grad()
@@ -241,3 +241,37 @@ class FQIAgent(Agent):
         self.soft_update()
 
         return bellman_error.detach().item()
+    
+#   -------------------------------------------     EXTRA      -------------------------------------------------
+
+# Faz uma escolha epsilon-greedy
+def epsilon_greedy_qnet(qnet, env, state, epsilon):
+    if np.random.random() < epsilon:
+        action = env.action_space.sample()
+    else:
+        state_v = torch.tensor(state, dtype=torch.float32)
+        state_v = state_v.unsqueeze(0)  # Adiciona dimensão de batch como eixo 0 (e.g. transforma uma lista [a,b,c] em [[a,b,c]])
+        q_vals_v = qnet(state_v)
+        _, act_v = torch.max(q_vals_v, dim=1)
+        action = int(act_v.item())
+    return action
+
+# loss function, para treinamento da rede no DQN
+def calc_loss(batch, net, tgt_net, gamma):
+    states, actions, rewards, dones, next_states = batch
+    #print(f"next_states Antes: {next_states}")
+    states_v = torch.tensor(states, dtype=torch.float32)
+    next_states_v = torch.tensor(next_states, dtype=torch.float32)
+    actions_v = torch.tensor(actions, dtype=torch.int64)
+    rewards_v = torch.tensor(rewards)
+    done_mask = torch.tensor(dones, dtype=torch.bool)
+
+    #print(f"next_states Antes: {next_states}")
+    #print(f"net: {net}")
+    state_action_values = net(states_v).gather(1, actions_v.unsqueeze(-1)).squeeze(-1)
+    next_state_values = tgt_net(next_states_v).max(dim=1)[0]
+    next_state_values[done_mask] = 0.0
+    next_state_values = next_state_values.detach()
+
+    target_state_action_values = rewards_v + gamma * next_state_values
+    return nn.MSELoss()(state_action_values, target_state_action_values)
