@@ -156,8 +156,6 @@ class Agent():
             target_param.data.copy_(self.tau*local_param.data + (1.0-self.tau)*target_param.data)
 
     def bellman_error(self, experiences):
-        
-        
         states, actions, rewards, dones, next_states = experiences
         #print(f"Actions Antes: {actions}")
         #print(f"States Antes: {states}")
@@ -197,9 +195,10 @@ class Agent():
         return bellman_error, Q_a_s, actions
 
 class CQLAgent(Agent):
-    def __init__(self, state_size, action_size, tau, gamma, lr, alpha, hidden_size=[128, 128], device="cpu", isDiscrete=True):
+    def __init__(self, state_size, action_size, tau, gamma, lr, alpha, alpha_decay, hidden_size=[128, 128], device="cpu", isDiscrete=True):
         super().__init__(state_size, action_size, tau, gamma, lr, hidden_size, device, isDiscrete)
         self.alpha = alpha
+        self.alpha_decay = alpha_decay
         self.isDiscrete = isDiscrete
         
     def cql_loss(self, q_values, current_action):
@@ -214,19 +213,19 @@ class CQLAgent(Agent):
         
         cql1_loss = self.cql_loss(Q_a_s, actions)
         q1_loss = cql1_loss + self.alpha * bellman_error
-
+        
         self.optimizer.zero_grad()
         q1_loss.backward()
         nn.utils.clip_grad_norm_(self.network.parameters(), 1.)
         self.optimizer.step()
-
+        
         # ------------------- update target network ------------------- #
         self.soft_update()
         return q1_loss.detach().item(), cql1_loss.detach().item(), bellman_error.detach().item()
 
 class FQIAgent(Agent):
-    def __init__(self, state_size, action_size, tau, gamma, lr, model, hidden_size=256, device="cpu"):
-        super().__init__(state_size, action_size, tau, gamma, lr, model, hidden_size, device)
+    def __init__(self, state_size, action_size, tau, gamma, lr, hidden_size=256, device="cpu", isDiscrete=True):
+        super().__init__(state_size, action_size, tau, gamma, lr, hidden_size, device, isDiscrete)
     
     def learn(self, experiences):
         self.network.train()
@@ -234,7 +233,7 @@ class FQIAgent(Agent):
         
         self.optimizer.zero_grad()
         bellman_error.backward()
-        nn.utils.clip_grad_norm_(self.network.parameters(), 1.0)
+        nn.utils.clip_grad_norm_(self.network.parameters(), 1.)
         self.optimizer.step()
 
         # Atualiza a rede-alvo de forma suave
