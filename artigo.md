@@ -22,35 +22,6 @@ A principal diferença entre **Offline RL** e **RL tradicional** é que, no RL c
 
 ---
 
-## Explicação de Algoritmos
-
-### SARSA (State-Action-Reward-State-Action)
-SARSA é um método de aprendizado por reforço baseado em controle da política. O nome SARSA vem da sequência de elementos que ele usa para atualizar a função de valor Q: **(s, a, r, s', a')**, onde:
-- **s**: Estado atual
-- **a**: Ação tomada
-- **r**: Recompensa recebida
-- **s'**: Próximo estado
-- **a'**: Próxima ação escolhida pela política
-
-A atualização da função Q segue a equação:
-```math
-Q(s, a) \leftarrow Q(s, a) + \alpha [r + \gamma Q(s', a') - Q(s, a)]
-```
-
-Diferente do Q-learning, que usa a melhor ação futura para a atualização, SARSA segue a política atual para selecionar ações.
-
-### DQN (Deep Q-Network)
-DQN é um algoritmo baseado em redes neurais para aprendizado por reforço. Ele usa uma rede neural para aproximar a função Q e melhorar a tomada de decisão.
-
-A atualização da função Q segue:
-```math
-Q(s, a) \leftarrow r + \gamma \max Q(s', a')
-```
-
-DQN resolve problemas comuns do aprendizado por reforço, como instabilidade e correlação entre amostras consecutivas, utilizando técnicas como **Replay Buffer** e **Redes-Alvo** para estabilizar o treinamento.
-
----
-
 ## Aplicações de Offline RL
 
 Apesar dos desafios, o Offline RL tem aplicações promissoras:
@@ -62,49 +33,49 @@ Apesar dos desafios, o Offline RL tem aplicações promissoras:
 
 ---
 
-## Construção de um Dataset para Offline RL
+## Algoritmos Utilizados para Geração de Dataset
 
-Para ilustrar o funcionamento do Offline RL, utilizamos um **Replay Buffer** contendo transições coletadas de diferentes ambientes do Gymnasium:
+Diferente de cenários onde já existem datasets prontos, em muitos ambientes de aprendizado por reforço é necessário criar o próprio conjunto de dados para treinamento offline. Isso é essencial para garantir que o modelo tenha acesso a uma variedade de estados e ações, promovendo um aprendizado mais generalizado. 
 
-- **FrozenLake-v1**
-- **Taxi-v3**
-- **CliffWalking-v0**
-- **CartPole-v1**
-- **LunarLander-v3**
+Os seguintes algoritmos foram utilizados para coletar os dados antes do treinamento offline:
 
-Cada entrada no dataset contém:
+### **SARSA (State-Action-Reward-State-Action)**
 
-- Estado atual (`s`)
-- Ação tomada (`a`)
-- Recompensa recebida (`r`)
-- Estado seguinte (`s'`)
-- Indicador de finalização (`done`)
+SARSA é um método de aprendizado por reforço baseado em controle da política. O nome SARSA vem da sequência de elementos que ele usa para atualizar a função de valor Q: \((s, a, r, s', a')\), onde:
 
-A coleta dos dados foi feita utilizando o algoritmo **SARSA**.
+- \(s\): Estado atual
+- \(a\): Ação tomada
+- \(r\): Recompensa recebida
+- \(s'\): Próximo estado
+- \(a'\): Próxima ação escolhida pela política
 
-```python
-import gymnasium as gym
-import torch
-from util.algorithms import run_sarsa
-from util.network import ReplayBuffer
+Diferente do Q-learning, que usa a melhor ação futura para a atualização, SARSA segue a política atual para selecionar ações, garantindo que os dados coletados sejam coerentes com a política que será utilizada.
 
-DATASET_SIZE = 200_000
-BATCH_SIZE = 128
-GAMMA = 0.99
-LEARNING_RATE = 1e-3
+### **DDQN (Double Deep Q-Network)**
 
-ENV_NAMES = ["FrozenLake-v1", "Taxi-v3", "CliffWalking-v0"]
-ENVS_REPLAY_BUFFER = []
+O DDQN é uma versão aprimorada do DQN que reduz o viés otimista nas atualizações da função Q. Ele resolve problemas de superestimação dos valores Q utilizando duas redes neurais separadas para selecionar e avaliar a melhor ação:
 
-for env_name in ENV_NAMES:
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    replay_buffer = ReplayBuffer(DATASET_SIZE, BATCH_SIZE, device)
-    env = gym.make(env_name, render_mode="rgb_array")
-    
-    run_sarsa(env, replay_buffer, DATASET_SIZE, LEARNING_RATE, GAMMA)
-    ENVS_REPLAY_BUFFER.append((env_name, env, replay_buffer))
-    replay_buffer.save_config(f"config/dataset/sarsa/{env_name}.json")
-```
+Ao gerar um dataset utilizando DDQN, garantimos que as amostras de aprendizado sejam mais robustas e menos sensíveis a erros comuns do DQN padrão.
+
+---
+
+## Algoritmos Offline Utilizados
+
+Para treinar os modelos utilizando os datasets gerados, utilizamos os seguintes algoritmos de Aprendizado por Reforço Offline:
+
+### **FQI (Fitted Q-Iteration)**
+
+O **FQI** é um método baseado em regressão para aprendizado por reforço offline. Ele utiliza um conjunto de transições \((s, a, r, s')\) e ajusta uma função Q iterativamente utilizando um modelo supervisionado.
+
+O FQI pode ser treinado com diferentes modelos, como redes neurais ou árvores de decisão, e demonstrou bons resultados nos ambientes testados.
+
+### **CQL (Conservative Q-Learning)**
+
+O **CQL** é um método que busca reduzir a dependência de amostras fora da distribuição presente no dataset. Ele modifica a função objetivo para penalizar a maximização excessiva de valores Q, evitando que o agente aprenda políticas irreais. 
+
+Esse algoritmo mostrou bons resultados no ambiente **CartPole**, mas não foi eficiente em ambientes discretos, como **FrozenLake**, sugerindo que ajustes na implementação sejam necessários.
+
+---
 
 ---
 
@@ -132,5 +103,7 @@ O Offline RL representa um avanço significativo para situações onde a coleta 
 - **Melhoria do CQL**
 - **Aprendizado por Imitação**
 - **Uso de Modelos Generativos**
+
+
 
 
